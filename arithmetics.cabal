@@ -1,0 +1,71 @@
+cabal-version: 2.4
+name: arithmetics
+version: 0.0.0.0
+
+common commons
+  build-depends:
+    , base
+    , base-unicode-symbols
+    , bifunctors
+    , containers
+    , containers-unicode-symbols
+    , data-fix
+    , generic-data
+    , ghc-prim
+    , pretty-show
+    , tasty
+    , tasty-quickcheck
+    , recursion-schemes
+    , free
+    , vector-sized
+    , text
+
+  default-extensions:
+    BlockArguments
+    ConstraintKinds
+    DataKinds
+    DeriveFoldable
+    DeriveFoldable
+    DeriveFunctor
+    DeriveFunctor
+    DeriveGeneric
+    DeriveTraversable
+    DeriveTraversable
+    FlexibleContexts
+    FlexibleInstances
+    FunctionalDependencies
+    GADTs
+    KindSignatures
+    LiberalTypeSynonyms
+    MultiParamTypeClasses
+    OverloadedLists
+    PartialTypeSignatures
+    PatternSynonyms
+    PolyKinds
+    RankNTypes
+    ScopedTypeVariables
+    StandaloneDeriving
+    StandaloneKindSignatures
+    TemplateHaskell
+    TupleSections
+    TypeApplications
+    TypeFamilies
+    TypeFamilyDependencies
+    TypeOperators
+    UndecidableInstances
+    UnicodeSyntax ImportQualifiedPost
+    ViewPatterns
+    OverloadedStrings
+
+  ghc-options: -Wpartial-type-signatures -fdefer-typed-holes -Wall -Wno-star-is-type -Wno-unticked-promoted-constructors
+
+library
+  import: commons
+  exposed-modules: Arithmetics
+
+-- test-suite checks
+--   import: commons
+--   type: exitcode-stdio-1.0
+--   hs-source-dirs: checks
+--   main-is: Checks.hs
+--   build-depends: arithmetics
