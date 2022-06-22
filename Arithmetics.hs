@@ -5,7 +5,7 @@ import Data.Functor.Foldable
 import Data.Fix
 import Data.Vector.Sized
 import GHC.TypeNats
-import Prelude (Bool(..), Foldable (..), Num (..), Show (..), Semigroup (..), error, Functor, Int, Eq, otherwise, Maybe (..))
+import Prelude (Bool(..), Foldable (..), Num (..), Show (..), Semigroup (..), error, Functor (..), Int, Eq, otherwise, Maybe (..), Ord (..), Applicative (..), Monoid (mconcat))
 import Data.Functor.Classes
 import Generic.Data
 import Prelude.Unicode
@@ -15,6 +15,11 @@ import Data.Type.Equality
 import Data.Function
 import Type.Reflection
 import Data.Proxy
+import Control.Applicative.Unicode
+import Debug.Trace
+import Data.Monoid.Unicode
+import Data.Text qualified as Text
+import Data.List.NonEmpty qualified as NonEmpty
 
 (▵) ∷ (input → left) → (input → right) → input → (left, right)
 function ▵ gunction = \ input → (function input, gunction input)
@@ -52,16 +57,45 @@ type family Unfix value = result | result → value where Unfix (Fix value) = va
 
 pattern (:×) ∷ Expression constant variable → Expression constant variable → Expression constant variable
 pattern one :× other = Fix (Operator Multiply (one :∎ other))
+infixl 7 :×
 
 pattern (:+) ∷ Expression constant variable → Expression constant variable → Expression constant variable
 pattern one :+ other = Fix (Operator Add (one :∎ other))
+infixl 6 :+
 
-parenthesize ∷ (Semigroup text, IsString text) ⇒ text → text
-parenthesize text = "(" <> text <> ")"
+pattern C :: constant -> Fix (Wender constant variable)
+pattern C constant = Fix (Constant constant)
 
-instance {-# overlapping #-} (Show constant, Show variable) ⇒ Show (Expression constant variable) where
-  show (one :+ other) = parenthesize do show one <> " + " <> show other
-  show (one :× other) = parenthesize do show one <> " × " <> show other
+pattern V :: variable -> Fix (Wender constant variable)
+pattern V variable = Fix (Variable variable)
+
+parenthesize ∷ (Monoid text, IsString text) ⇒ text → text
+parenthesize text = "(" ⊕ text ⊕ ")"
+
+showVariables ∷ [Text] → Text
+showVariables = mconcat ∘ fmap (showOne ∘ (NonEmpty.head ▵ Prelude.length)) ∘ NonEmpty.group
+  where
+    showOne ∷ (Text, Int) → Text
+    showOne (variable, 1) = variable
+    showOne (variable, power) = variable ⊕ (toSuperscript ∘ Text.pack ∘ show) power
+    toSuperscript = Text.map \ character → case character of
+      '0' → '⁰'
+      '1' → '¹'
+      '2' → '²'
+      '3' → '³'
+      '4' → '⁴'
+      '5' → '⁵'
+      '6' → '⁶'
+      '7' → '⁷'
+      '8' → '⁸'
+      '9' → '⁹'
+      anyOtherCharacter → anyOtherCharacter
+
+instance {-# overlapping #-} Show constant ⇒ Show (Expression constant Text) where
+  show (C number :× (fold stringifyVariableGroup → Just labels)) = show number ⊕ Text.unpack (showVariables labels)
+  show (fold stringifyVariableGroup → Just labels) = Text.unpack (showVariables labels)
+  show (one :+ other) = parenthesize do show one ⊕ "  +  " ⊕ show other
+  show (one :× other) = parenthesize do show one ⊕ " × " ⊕ show other
   show (Fix (Constant constant)) = show constant
   show (Fix (Variable variable)) = show variable
   show _ = error "not implemented"
@@ -96,20 +130,84 @@ instance (Eq constant, Eq variable, Eq recursion) ⇒ Eq (Wender constant variab
 instance IsString (Expression constant Text) where
   fromString = Fix ∘ Variable ∘ fromString
 
-normalize ∷ Num number ⇒ Unfix (Expression number variable) → Expression number variable
+isVariableGroup ∷ Base (Expression number variable) Bool → Bool
+isVariableGroup (Operator Multiply (e :∎ e')) = e ∧ e'
+isVariableGroup (Variable _) = True
+isVariableGroup _ = False
+
+isVariableGroupWithConstant :: Expression number variable -> Bool
+isVariableGroupWithConstant (C _ :× e) = fold isVariableGroup e
+isVariableGroupWithConstant e = fold isVariableGroup e
+
+stringifyVariableGroup ∷ Base (Expression number variable) (Maybe [variable]) → Maybe [variable]
+stringifyVariableGroup (Operator Multiply (e :∎ e')) = pure (⊕) ⊛ e ⊛ e'
+stringifyVariableGroup (Variable text) = (Just ∘ pure) text
+stringifyVariableGroup _ = Nothing
+
+stringifyVariableGroupWithConstant :: Expression number variable -> Maybe [variable]
+stringifyVariableGroupWithConstant (C _ :× e) = fold stringifyVariableGroup e
+stringifyVariableGroupWithConstant e = fold stringifyVariableGroup e
+
+normalize ∷ (Num number, Ord variable) ⇒ Unfix (Expression number variable) → Expression number variable
+
+-- Reassociate expressions of form _1 + 2 + x_ as _(1 + 2) + x_ to make them
+-- amenable to reduction.
 normalize
   ( Operator operator@(equate (Proxy ∷ Proxy 2) ∘ proxify → Just Refl)
-    ( Fix (Constant one) :∎ Fix
+    ( C one :∎ Fix
       ( Operator surgeon@(equate (Proxy ∷ Proxy 2) ∘ proxify → Just Refl)
-        ( ( Fix (Constant other) ) :∎ remainder ) ) ) )
-  | operator ≡ surgeon = Fix (Operator operator (Fix (Operator operator (Fix (Constant one) :∎ Fix (Constant other))) :∎ remainder))
+        ( C other :∎ remainder ) ) ) )
+  | operator ≡ surgeon = trace "reasociate constants" do Fix (Operator operator (Fix (Operator operator (C one :∎ C other)) :∎ remainder))
+
+-- Commute expressions, moving constants to the left.
 normalize
   ( Operator operator@(equate (Proxy ∷ Proxy 2) ∘ proxify → Just Refl)
-    ( Fix (Constant one) :∎ Fix (Constant other) ) ) = Fix (Constant (operate operator one other))
+    ( V v :∎ Fix
+      ( Operator surgeon@(equate (Proxy ∷ Proxy 2) ∘ proxify → Just Refl)
+        ( C c :∎ remainder ) ) ) )
+  | operator ≡ surgeon = trace "commute" do Fix (Operator operator (Fix (Operator operator (C c :∎ V v)) :∎ remainder))
+
+-- Reassociate all other expressions to the right.
+normalize
+  ( Operator operator@(equate (Proxy ∷ Proxy 2) ∘ proxify → Just Refl)
+    ( Fix ( Operator surgeon@(equate (Proxy ∷ Proxy 2) ∘ proxify → Just Refl) (one :∎ other) ) :∎ remainder ) )
+  | operator ≡ surgeon = trace "reassociate" do Fix (Operator operator (one :∎ Fix (Operator operator (other :∎ remainder))))
+
+-- Reduce constant expressions.
+normalize
+  ( Operator operator@(equate (Proxy ∷ Proxy 2) ∘ proxify → Just Refl)
+    ( C one :∎ C other ) ) = trace "operate" do C (operate operator one other)
+
 normalize expression = case Fix expression of
-  multiple@(Fix (Constant _)) :× (salmon :+ trout)
-    → (multiple :× salmon) :+ (multiple :× trout)
-  (subexpression :+ constant@(Fix (Constant _))) → constant :+ subexpression
+
+-- Distribute multiplication over addition on the left.
+  multiple :× (salmon :+ trout)
+    → trace "distribute left" do (multiple :× salmon) :+ (multiple :× trout)
+
+-- Distribute multiplication over addition on the right.
+  (salmon :+ trout) :× multiple
+    → trace "distribute right" do (salmon :× multiple) :+ (trout :× multiple)
+
+-- Gather constants on the left.
+  (subexpression :+ constant@(C _)) → trace "constant1" do constant :+ subexpression
+  (subexpression :× constant@(C _)) → trace "constant2" do constant :× subexpression
+
+-- Sort variable groups.
+  V v :× (V w :× e) | w < v → trace "sort" do V w :× (V v :× e)
+
+  e₁@(stringifyVariableGroupWithConstant → Just t₁) :+
+    ( e₂@(stringifyVariableGroupWithConstant → Just t₂) :+ e₃ ) | t₂ < t₁ → trace "sort2" do e₂ :+ (e₁ :+ e₃)
+
+  e₁@(stringifyVariableGroupWithConstant → Just t₁) :+
+    e₂@(stringifyVariableGroupWithConstant → Just t₂) | t₂ < t₁ → trace "sort3" do e₂ :+ e₁
+
+-- Gather like terms.
+  C c₁ :× v₁@(fold stringifyVariableGroup → Just t₁) :+ (C c₂ :× v₂@(fold stringifyVariableGroup → Just t₂) :+ e)
+    | t₁ ≡ t₂ → trace "gather1" do (C c₁ :+ C c₂) :× v₁ :+ e
+  C c₁ :× v₁@(fold stringifyVariableGroup → Just t₁) :+ C c₂ :× v₂@(fold stringifyVariableGroup → Just t₂)
+    | t₁ ≡ t₂ → trace "gather2" do (C c₁ :+ C c₂) :× v₁
+
+-- If nothing applies, do nothing.
   _ → Fix expression
 
 converge :: Eq a => [a] -> [a]
